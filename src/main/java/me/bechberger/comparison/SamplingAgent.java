@@ -91,6 +91,7 @@ public class SamplingAgent implements Runnable {
             }
         }
         store.store(file);
+	System.out.println();
         System.out.println(Store.intervalsToTable(List.of(store)));
         stop = false;
     }

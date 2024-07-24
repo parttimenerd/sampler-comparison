@@ -18,6 +18,9 @@ public class Main implements Runnable {
     @Parameters(index = "0..*", description = "JFR and sample files")
     private List<Path> files;
 
+    @CommandLine.Option(names = "--ap", description = "Async-profiler generated JFR file")
+    private Path asyncProfilerFile = null;
+
     @Override
     public void run() {
         var withoutJFR = files.stream().filter(file -> !file.toString().endsWith(".jfr")).findAny();
@@ -32,6 +35,9 @@ public class Main implements Runnable {
             if (file.toString().endsWith(".jfr")) {
                 stores.addAll(Store.readJFR(file, maxDepth));
             }
+        }
+        if (asyncProfilerFile != null) {
+            stores.addAll(Store.readJFR(asyncProfilerFile, maxDepth, "async-profiler"));
         }
         System.out.println(Store.intervalsToTable(stores));
         // print table comparing all stores with each other

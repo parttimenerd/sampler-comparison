@@ -83,14 +83,15 @@ public class Store {
      * @return
      */
     private String normalizeClassName(String className) { // throw away addresses
-        return className.split("[^a-zA-Z0-9_$.]")[0];
+        className = className.split("[^a-zA-Z0-9_$.]")[0];
+        return className.replaceAll("\\$\\$Lambda.*", "\\$\\$Lambda");
     }
 
     private <T> void add(String threadName, List<T> stackTrace, long timeNanos, Function<T, String> className, Function<T, String> methodName) {
         if (!checkThreadName(threadName)) {
             return;
         }
-        if (stackTrace.isEmpty()) {
+        if (stackTrace.size() < 2) {
             return;
         }
         getDigest().reset();
@@ -133,18 +134,25 @@ public class Store {
     }
 
     public static List<Store> readJFR(Path path, int maxDepth) {
+        return readJFR(path, maxDepth, null);
+    }
+
+    public static List<Store> readJFR(Path path, int maxDepth, String name) {
         try (RecordingFile recordingFile = new RecordingFile(path)) {
-            var oldStore = new Store("Old sampler", maxDepth);
-            var newStore = new Store("New sampler", maxDepth);
-            var newStoreWithErrors = new Store("New with errors", maxDepth);
+            var oldStore = new Store(name == null ? "Old sampler" : name, maxDepth);
+            var newStore = name == null ? new Store("New sampler", maxDepth) : null;
+            var newStoreWithErrors = name == null ? new Store("New with errors", maxDepth) : null;
             while (recordingFile.hasMoreEvents()) {
                 var event = recordingFile.readEvent();
                 var eventTypeName = event.getEventType().getName();
                 var timeNanos = event.getStartTime().getEpochSecond() * 1_000_000_000 + event.getStartTime().getNano();
                 if (eventTypeName.equals("jdk.ExecutionSample") || eventTypeName.equals("jdk.NativeMethodSample")) {
                     var stackTrace = event.getStackTrace();
+                    if (event.getThread("sampledThread").getJavaName() == null) {
+                        continue;
+                    }
                     oldStore.add(event.getThread("sampledThread").getJavaName(), stackTrace, timeNanos);
-                } else if (eventTypeName.equals("jdk.CPUTimeExecutionSample")) {
+                } else if (newStore != null && eventTypeName.equals("jdk.CPUTimeExecutionSample")) {
                     var stackTrace = event.getStackTrace();
                     var sampledThread = event.getThread("sampledThread").getJavaName();
                     if (stackTrace == null) {
@@ -155,7 +163,7 @@ public class Store {
                     newStoreWithErrors.add(sampledThread, stackTrace, timeNanos);
                 }
             }
-            return Stream.of(oldStore, newStore, newStoreWithErrors).filter(s -> !s.getDataPerThread().isEmpty()).collect(Collectors.toList());
+            return Stream.of(oldStore, newStore, newStoreWithErrors).filter(s -> s != null && !s.getDataPerThread().isEmpty()).collect(Collectors.toList());
         } catch (Exception e) {
             throw new RuntimeException("Could not read JFR data", e);
         }
