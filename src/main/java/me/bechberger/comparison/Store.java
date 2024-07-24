@@ -101,6 +101,7 @@ public class Store {
         try (RecordingFile recordingFile = new RecordingFile(path)) {
             var oldStore = new Store("Old sampler", maxDepth);
             var newStore = new Store("New sampler", maxDepth);
+            var newStoreWithErrors = new Store("New with errors", maxDepth);
             while (recordingFile.hasMoreEvents()) {
                 var event = recordingFile.readEvent();
                 var eventTypeName = event.getEventType().getName();
@@ -110,13 +111,16 @@ public class Store {
                     oldStore.add(event.getThread("sampledThread").getJavaName(), stackTrace, timeNanos);
                 } else if (eventTypeName.equals("jdk.CPUTimeExecutionSample")) {
                     var stackTrace = event.getStackTrace();
+                    var sampledThread = event.getThread("sampledThread").getJavaName();
                     if (stackTrace == null) {
+                        newStoreWithErrors.add(sampledThread, timeNanos, new byte[]{(byte)0});
                         continue;
                     }
-                    newStore.add(event.getThread("sampledThread").getJavaName(), stackTrace, timeNanos);
+                    newStore.add(sampledThread, stackTrace, timeNanos);
+                    newStoreWithErrors.add(sampledThread, stackTrace, timeNanos);
                 }
             }
-            return Stream.of(oldStore, newStore).filter(s -> !s.getDataPerThread().isEmpty()).collect(Collectors.toList());
+            return Stream.of(oldStore, newStore, newStoreWithErrors).filter(s -> !s.getDataPerThread().isEmpty()).collect(Collectors.toList());
         } catch (Exception e) {
             throw new RuntimeException("Could not read JFR data", e);
         }
@@ -201,6 +205,11 @@ public class Store {
         float sum = 0;
         for (var entry : thisDistribution.entrySet()) {
             sum += Math.abs(entry.getValue() - otherDistribution.getOrDefault(entry.getKey(), 0f));
+        }
+        for (var entry : otherDistribution.entrySet()) {
+            if (!thisDistribution.containsKey(entry.getKey())) {
+                sum += entry.getValue();
+            }
         }
         return sum;
     }

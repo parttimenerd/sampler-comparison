@@ -11,4 +11,9 @@
       <setting name="period" control="method-sampling-native-interval">10 ms</setting>
     </event>
 
+    <event name="jdk.CPUTimeExecutionSample">
+      <setting name="enabled" control="method-sampling-enabled">true</setting>
+      <setting name="period" control="method-sampling-native-interval">10 ms</setting>
+    </event>
+
 </configuration>

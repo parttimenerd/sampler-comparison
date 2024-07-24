@@ -35,18 +35,20 @@ public class Main implements Runnable {
         }
         System.out.println(Store.intervalsToTable(stores));
         // print table comparing all stores with each other
-        Map<Store, Map<Store, Float>> comp = stores.stream().collect(
-                Collectors.toMap(Function.identity(), store -> stores.stream().collect(
+        System.out.println();
+        List<Store> storesToCompare = stores.stream().filter(s -> !s.getName().contains("error")).toList();
+        Map<Store, Map<Store, Float>> comp = storesToCompare.stream().collect(
+                Collectors.toMap(Function.identity(), store -> storesToCompare.stream().collect(
                         Collectors.toMap(Function.identity(), store::differencePercentagePoints))));
-        for (var s : stores) {
-            System.out.println("-".repeat(20));
+        System.out.printf("%-20s", "");
+        for (var s : storesToCompare) {
             System.out.printf("%-20s", s.getName());
-            System.out.println();
-            System.out.println("-".repeat(20 * (stores.size() + 1)));
         }
-        for (var s : stores) {
-            System.out.printf("%-20s", s.getName());
-            for (var s2 : stores) {
+        System.out.println();
+        System.out.println("-".repeat(20 * (storesToCompare.size() + 1)));
+        for (var s : storesToCompare) {
+            System.out.printf("%20s", s.getName());
+            for (var s2 : storesToCompare) {
                 System.out.printf("%20.2f", comp.get(s).get(s2));
             }
             System.out.println();
