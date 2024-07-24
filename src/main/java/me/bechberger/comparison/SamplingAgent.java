@@ -100,7 +100,7 @@ public class SamplingAgent implements Runnable {
             if (thread.getName().equals(SAMPLING_THREAD_NAME) && thread.getState() == State.RUNNABLE) {
                 return;
             }
-            store.add(thread.getName() + thread.threadId(), stackTrace, System.nanoTime());
+            store.add(thread.getName(), stackTrace, System.nanoTime());
         });
     }
 

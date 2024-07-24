@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -23,17 +24,23 @@ public class Store {
     private final String name;
     private final int maxDepth;
     private final Map<String, List<TimeAndHash>> dataPerThread;
-    private final MessageDigest digest;
+    private final ThreadLocal<MessageDigest> digest = new ThreadLocal<>();
 
     public Store(String name, int maxDepth, Map<String, List<TimeAndHash>> dataPerThread) {
         this.name = name;
         this.maxDepth = maxDepth;
         this.dataPerThread = dataPerThread;
-        try {
-            digest = MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);
+    }
+
+    private MessageDigest getDigest() {
+        if (digest.get() == null) {
+            try {
+                digest.set(MessageDigest.getInstance("SHA-256"));
+            } catch (NoSuchAlgorithmException e) {
+                throw new RuntimeException("Could not create digest", e);
+            }
         }
+        return digest.get();
     }
 
     public Store(String name, int maxDepth) {
@@ -48,31 +55,59 @@ public class Store {
         return this.dataPerThread;
     }
 
-    void add(String threadName, long timeNanos, byte[] hash) {
-        if (threadName.equals(SamplingAgent.SAMPLING_THREAD_NAME)) {
-            return;
-        }
+    private final Set<String> IGNORED_THREADS = Set.of(
+            SamplingAgent.SAMPLING_THREAD_NAME,
+            "Reference Handler",
+            "Finalizer",
+            "Signal Dispatcher",
+            "Common-Cleaner",
+            "JFR Periodic Tasks",
+            "JFR Recorder Thread",
+            "Notification Thread"
+    );
+
+    private boolean checkThreadName(String threadName) {
+        return !IGNORED_THREADS.contains(threadName);
+    }
+
+    private void add(String threadName, long timeNanos, byte[] hash) {
         this.dataPerThread.computeIfAbsent(threadName, k -> new ArrayList<>()).add(new TimeAndHash(timeNanos, hash));
     }
 
-    public void add(String threadName, RecordedStackTrace stackTrace, long timeNanos) {
-        digest.reset();
-        for (int i = Math.max(0, stackTrace.getFrames().size() - maxDepth); i < stackTrace.getFrames().size(); i++) {
-            var frame = stackTrace.getFrames().get(i);
-            digest.update((frame.getMethod().getType().getName() + frame.getMethod().getName()).getBytes());
+    /**
+     * Throw away addresses and normalize class names
+     * <p>
+     * E.g. from {@code java.lang.invoke.LambdaForm$DMH/0x0000007c01001000}
+     * to {@code java.lang.invoke.LambdaForm$DMH}
+     * @param className
+     * @return
+     */
+    private String normalizeClassName(String className) { // throw away addresses
+        return className.split("[^a-zA-Z0-9_$.]")[0];
+    }
+
+    private <T> void add(String threadName, List<T> stackTrace, long timeNanos, Function<T, String> className, Function<T, String> methodName) {
+        if (!checkThreadName(threadName)) {
+            return;
         }
-        byte[] hash = digest.digest();
+        if (stackTrace.isEmpty()) {
+            return;
+        }
+        getDigest().reset();
+        for (int i = Math.max(0, stackTrace.size() - maxDepth); i < stackTrace.size(); i++) {
+            String name = normalizeClassName(className.apply(stackTrace.get(i)));
+            getDigest().update((name + "." + methodName.apply(stackTrace.get(i))).getBytes());
+        }
+        byte[] hash = getDigest().digest();
         this.add(threadName, timeNanos, hash);
     }
 
+    public void add(String threadName, RecordedStackTrace stackTrace, long timeNanos) {
+        add(threadName, stackTrace.getFrames(), timeNanos, f -> f.getMethod().getType().getName(), f -> f.getMethod().getName());
+    }
+
     public void add(String threadName, StackTraceElement[] stackTrace, long timeNanos) {
-        digest.reset();
-        for (int i = Math.max(0, stackTrace.length - maxDepth); i < stackTrace.length; i++) {
-            var frame = stackTrace[i];
-            digest.update((frame.getClassName() + frame.getMethodName()).getBytes());
-        }
-        byte[] hash = digest.digest();
-        this.add(threadName, timeNanos, hash);
+        add(threadName, Arrays.asList(stackTrace), timeNanos, StackTraceElement::getClassName, StackTraceElement::getMethodName);
     }
 
     public void store(Path path) {
@@ -193,25 +228,37 @@ public class Store {
         return getAbsoluteHashDistribution().entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue() / (float) sum));
     }
 
+    public record PercResult(float summedDiff, float percThatIsntInOther) {}
+
     /**
-     * Calculate the difference between two stores in percentage points mismatch of the hash distribution
+     * Calculate the percentage of this stores' samples
+     * that are not in the other store (either by not at all
+     * or by appearing with a different frequency, take the percentage point
+     * difference then)
      */
-    public float differencePercentagePoints(Store other) {
+    public PercResult differencePercentagePoints(Store other) {
         if (this.maxDepth != other.maxDepth) {
             throw new IllegalArgumentException("Max depth does not match");
         }
+        var percThatIsntInOther = 0f;
         var thisDistribution = this.getRelativeDistribution();
         var otherDistribution = other.getRelativeDistribution();
         float sum = 0;
         for (var entry : thisDistribution.entrySet()) {
-            sum += Math.abs(entry.getValue() - otherDistribution.getOrDefault(entry.getKey(), 0f));
+            var diff = entry.getValue() - otherDistribution.getOrDefault(entry.getKey(), 0f);
+            if (diff > 0) {
+                sum += Math.abs(diff);
+            }
+            if (diff == entry.getValue()) {
+                percThatIsntInOther += entry.getValue();
+            }
         }
-        for (var entry : otherDistribution.entrySet()) {
+        /*for (var entry : otherDistribution.entrySet()) {
             if (!thisDistribution.containsKey(entry.getKey())) {
                 sum += entry.getValue();
             }
-        }
-        return sum;
+        }*/
+        return new PercResult(sum, percThatIsntInOther);
     }
 
     /**
